@@ -104,11 +104,12 @@ def get_signaux(df):
     return sigs
 
 
-def make_chart(df, nom, tf):
-    df   = calc_supertrend(df).tail(80).copy()
+def make_chart(data, nom, tf):
+    # data = DataFrame brut (pas encore supertrend)
+    df   = calc_supertrend(data).tail(80).copy()
     sigs = get_signaux(df)
 
-    # Supertrend propre sans NaN
+    # Supertrend propre
     st_val  = df["st"].ffill().fillna(df["Close"])
     st_bull = st_val.where(df["dir"] == 1,  other=np.nan)
     st_bear = st_val.where(df["dir"] == -1, other=np.nan)
@@ -125,41 +126,46 @@ def make_chart(df, nom, tf):
         rc={"axes.labelcolor":"#999","xtick.color":"#888","ytick.color":"#888","font.size":9},
     )
 
+    # Construit addplots seulement si données valides
     addplots = []
     if st_bull.notna().sum() > 1:
         addplots.append(mpf.make_addplot(st_bull, color="#00bcd4", width=1.8))
     if st_bear.notna().sum() > 1:
         addplots.append(mpf.make_addplot(st_bear, color="#ff5252", width=1.8))
 
+    # ── APPEL CORRECT de mpf.plot ──
+    kwargs = dict(
+        type="candle",
+        style=style,
+        volume=True,
+        returnfig=True,
+        figsize=(13, 7),
+        tight_layout=True,
+    )
     if addplots:
-        fig, axes = mpf.plot(
-            df, type="candle", style=style,
-            addplot=addplots,
-            volume=True, returnfig=True, figsize=(13, 7), tight_layout=True,
-        )
-    else:
-        fig, axes = mpf.plot(
-            df, type="candle", style=style,
-            volume=True, returnfig=True, figsize=(13, 7), tight_layout=True,
-        )
+        kwargs["addplot"] = addplots
 
+    fig, axes = mpf.plot(df, **kwargs)
     ax = axes[0]
 
+    # Fleches blanches
     for sig in sigs:
         if sig["date"] not in df.index:
             continue
-        idx, prix = df.index.get_loc(sig["date"]), sig["prix"]
+        idx  = df.index.get_loc(sig["date"])
+        prix = sig["prix"]
         if sig["type"] == "BUY":
             ax.annotate("", xy=(idx, prix*0.9984), xytext=(idx, prix*0.9968),
                 arrowprops=dict(arrowstyle="-|>", color="white", lw=2, mutation_scale=14))
-            ax.text(idx, prix*0.9958, f"{prix:.3f}", color="white", fontsize=7.5,
-                ha="center", va="top", fontweight="bold")
+            ax.text(idx, prix*0.9958, f"{prix:.3f}", color="white",
+                fontsize=7.5, ha="center", va="top", fontweight="bold")
         else:
             ax.annotate("", xy=(idx, prix*1.0016), xytext=(idx, prix*1.0032),
                 arrowprops=dict(arrowstyle="-|>", color="white", lw=2, mutation_scale=14))
-            ax.text(idx, prix*1.0042, f"{prix:.3f}", color="white", fontsize=7.5,
-                ha="center", va="bottom", fontweight="bold")
+            ax.text(idx, prix*1.0042, f"{prix:.3f}", color="white",
+                fontsize=7.5, ha="center", va="bottom", fontweight="bold")
 
+    # Prix actuel
     lp = df["Close"].iloc[-1]
     ax.axhline(lp, color="#ff4081", lw=0.9, linestyle="--", alpha=0.85)
     ax.text(len(df)-0.5, lp, f"  {lp:.3f}", color="white", fontsize=9.5,
@@ -185,8 +191,8 @@ async def scan(app):
                 df = get_data(info["symbol"], cfg["period"], cfg["interval"])
                 if df.empty or len(df) < 20:
                     continue
-                df   = calc_supertrend(df)
-                sigs = get_signaux(df)
+                df_st = calc_supertrend(df)
+                sigs  = get_signaux(df_st)
                 if not sigs:
                     continue
                 last     = sigs[-1]
@@ -254,14 +260,13 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text("Donnees indisponibles. Reessaie.")
                 return
 
-            df_st = calc_supertrend(df)
-            sigs  = get_signaux(df_st)
-            last  = sigs[-1] if sigs else None
-            buf   = make_chart(df, info["nom"], tf)
-            lp    = df_st["Close"].iloc[-1]
-            dir_  = df_st["dir"].iloc[-1]
-            tendance = "Haussier" if dir_ == 1 else "Baissier"
-            sig_txt = ""
+            df_st    = calc_supertrend(df)
+            sigs     = get_signaux(df_st)
+            last     = sigs[-1] if sigs else None
+            buf      = make_chart(df, info["nom"], tf)
+            lp       = df_st["Close"].iloc[-1]
+            tendance = "Haussier" if df_st["dir"].iloc[-1] == 1 else "Baissier"
+            sig_txt  = ""
             if last:
                 e = "ACHAT" if last["type"] == "BUY" else "VENTE"
                 sig_txt = f"\nDernier signal : {e} @ {last['prix']:.3f} - {last['date'].strftime('%d/%m %H:%M')}"
