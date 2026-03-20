@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import mplfinance as mpf
+import matplotlib.patches as mpatches
 import requests
 from io import BytesIO
 from datetime import datetime
@@ -105,73 +105,85 @@ def get_signaux(df):
 
 
 def make_chart(data, nom, tf):
-    # data = DataFrame brut (pas encore supertrend)
     df   = calc_supertrend(data).tail(80).copy()
     sigs = get_signaux(df)
+    n    = len(df)
 
-    # Supertrend propre
-    st_val  = df["st"].ffill().fillna(df["Close"])
-    st_bull = st_val.where(df["dir"] == 1,  other=np.nan)
-    st_bear = st_val.where(df["dir"] == -1, other=np.nan)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 8),
+        gridspec_kw={"height_ratios": [3, 1]}, facecolor="#131722")
+    ax1.set_facecolor("#131722")
+    ax2.set_facecolor("#131722")
+    fig.subplots_adjust(hspace=0.05)
 
-    mc = mpf.make_marketcolors(
-        up="#26a69a", down="#ef5350",
-        edge="inherit", wick="inherit",
-        volume={"up": "#26a69a55", "down": "#ef535055"},
-    )
-    style = mpf.make_mpf_style(
-        marketcolors=mc, base_mpf_style="nightclouds",
-        gridstyle=":", gridcolor="#2a2a3a",
-        facecolor="#131722", figcolor="#131722",
-        rc={"axes.labelcolor":"#999","xtick.color":"#888","ytick.color":"#888","font.size":9},
-    )
+    # ── Bougies ──
+    for i in range(n):
+        o, h, l, c = df["Open"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i], df["Close"].iloc[i]
+        color = "#26a69a" if c >= o else "#ef5350"
+        ax1.plot([i, i], [l, h], color=color, linewidth=0.8)
+        ax1.add_patch(plt.Rectangle((i - 0.35, min(o, c)), 0.7, abs(c - o),
+            color=color, zorder=2))
 
-    # Construit addplots seulement si données valides
-    addplots = []
-    if st_bull.notna().sum() > 1:
-        addplots.append(mpf.make_addplot(st_bull, color="#00bcd4", width=1.8))
-    if st_bear.notna().sum() > 1:
-        addplots.append(mpf.make_addplot(st_bear, color="#ff5252", width=1.8))
+    # ── Supertrend ──
+    for i in range(1, n):
+        if not np.isnan(df["st"].iloc[i]) and not np.isnan(df["st"].iloc[i-1]):
+            col = "#00bcd4" if df["dir"].iloc[i] == 1 else "#ff5252"
+            ax1.plot([i-1, i], [df["st"].iloc[i-1], df["st"].iloc[i]], color=col, linewidth=1.8, zorder=3)
 
-    # ── APPEL CORRECT de mpf.plot ──
-    kwargs = dict(
-        type="candle",
-        style=style,
-        volume=True,
-        returnfig=True,
-        figsize=(13, 7),
-        tight_layout=True,
-    )
-    if addplots:
-        kwargs["addplot"] = addplots
-
-    fig, axes = mpf.plot(df, **kwargs)
-    ax = axes[0]
-
-    # Fleches blanches
+    # ── Fleches blanches ──
     for sig in sigs:
         if sig["date"] not in df.index:
             continue
         idx  = df.index.get_loc(sig["date"])
         prix = sig["prix"]
         if sig["type"] == "BUY":
-            ax.annotate("", xy=(idx, prix*0.9984), xytext=(idx, prix*0.9968),
+            ax1.annotate("", xy=(idx, prix * 0.9984), xytext=(idx, prix * 0.9968),
                 arrowprops=dict(arrowstyle="-|>", color="white", lw=2, mutation_scale=14))
-            ax.text(idx, prix*0.9958, f"{prix:.3f}", color="white",
+            ax1.text(idx, prix * 0.9955, f"{prix:.3f}", color="white",
                 fontsize=7.5, ha="center", va="top", fontweight="bold")
         else:
-            ax.annotate("", xy=(idx, prix*1.0016), xytext=(idx, prix*1.0032),
+            ax1.annotate("", xy=(idx, prix * 1.0016), xytext=(idx, prix * 1.0032),
                 arrowprops=dict(arrowstyle="-|>", color="white", lw=2, mutation_scale=14))
-            ax.text(idx, prix*1.0042, f"{prix:.3f}", color="white",
+            ax1.text(idx, prix * 1.0045, f"{prix:.3f}", color="white",
                 fontsize=7.5, ha="center", va="bottom", fontweight="bold")
 
-    # Prix actuel
+    # ── Prix actuel ──
     lp = df["Close"].iloc[-1]
-    ax.axhline(lp, color="#ff4081", lw=0.9, linestyle="--", alpha=0.85)
-    ax.text(len(df)-0.5, lp, f"  {lp:.3f}", color="white", fontsize=9.5,
+    ax1.axhline(lp, color="#ff4081", lw=0.9, linestyle="--", alpha=0.85)
+    ax1.text(n + 0.5, lp, f"  {lp:.3f}", color="white", fontsize=9,
         fontweight="bold", va="center",
         bbox=dict(boxstyle="round,pad=0.3", facecolor="#ef5350", edgecolor="none"))
-    ax.set_title(f"  {nom} - {tf.upper()} - Yahoo Finance",
+
+    # ── Volume ──
+    for i in range(n):
+        o, c = df["Open"].iloc[i], df["Close"].iloc[i]
+        color = "#26a69a55" if c >= o else "#ef535055"
+        vol = df["Volume"].iloc[i] if df["Volume"].iloc[i] else 0
+        ax2.bar(i, vol, color=color, width=0.7)
+
+    # ── Labels X (heures) ──
+    step = max(1, n // 8)
+    ticks = range(0, n, step)
+    ax1.set_xticks(list(ticks))
+    ax1.set_xticklabels([""] * len(list(ticks)))
+    ax2.set_xticks(list(ticks))
+    ax2.set_xticklabels(
+        [df.index[i].strftime("%H:%M") for i in ticks],
+        color="#888888", fontsize=8
+    )
+
+    # ── Style ──
+    for ax in [ax1, ax2]:
+        ax.tick_params(colors="#888888")
+        ax.spines["bottom"].set_color("#2a2a3a")
+        ax.spines["top"].set_color("#2a2a3a")
+        ax.spines["left"].set_color("#2a2a3a")
+        ax.spines["right"].set_color("#2a2a3a")
+        ax.yaxis.tick_right()
+        ax.tick_params(axis="y", colors="#888888", labelsize=8)
+        ax.grid(axis="y", color="#2a2a3a", linestyle=":", linewidth=0.5)
+        ax.set_xlim(-1, n + 2)
+
+    ax1.set_title(f"  {nom} - {tf.upper()} - Yahoo Finance",
         color="#cccccc", fontsize=11, loc="left", pad=8)
 
     buf = BytesIO()
@@ -228,8 +240,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Bonjour ! Je suis GoldSignalBot.\n\n"
                 f"Ton Chat ID : {chat_id}\n\n"
-                f"Je t envoie automatiquement une alerte + graphique\n"
-                f"des qu une fleche apparait sur le marche !\n\n"
+                f"Alertes automatiques actives !\n\n"
                 f"Commandes :\n"
                 f"fc gold 1m\n"
                 f"fc gold 5m\n"
