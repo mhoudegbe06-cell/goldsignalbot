@@ -26,6 +26,7 @@ ACTIFS = {
 }
 
 TIMEFRAMES = {
+    "1m":  {"period": "1d",  "interval": "1m"},
     "5m":  {"period": "1d",  "interval": "5m"},
     "15m": {"period": "5d",  "interval": "15m"},
     "1h":  {"period": "5d",  "interval": "1h"},
@@ -39,7 +40,7 @@ def get_data(symbol, period, interval):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     headers = {"User-Agent": "Mozilla/5.0"}
     period_yf = {"1d": "1d", "5d": "5d", "90d": "3mo"}
-    inter_yf  = {"5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
+    inter_yf  = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}
     params = {
         "range":    period_yf.get(period, "5d"),
         "interval": inter_yf.get(interval, interval),
@@ -107,6 +108,11 @@ def make_chart(df, nom, tf):
     df   = calc_supertrend(df).tail(80).copy()
     sigs = get_signaux(df)
 
+    # Supertrend propre sans NaN
+    st_val  = df["st"].ffill().fillna(df["Close"])
+    st_bull = st_val.where(df["dir"] == 1,  other=np.nan)
+    st_bear = st_val.where(df["dir"] == -1, other=np.nan)
+
     mc = mpf.make_marketcolors(
         up="#26a69a", down="#ef5350",
         edge="inherit", wick="inherit",
@@ -119,19 +125,12 @@ def make_chart(df, nom, tf):
         rc={"axes.labelcolor":"#999","xtick.color":"#888","ytick.color":"#888","font.size":9},
     )
 
-    # Supertrend — on remplace NaN par valeur neutre pour eviter zero-size
-    st_val = df["st"].fillna(method="ffill").fillna(df["Close"])
-    st_bull = st_val.where(df["dir"] == 1,  other=np.nan)
-    st_bear = st_val.where(df["dir"] == -1, other=np.nan)
-
-    # S'assure qu'il y a au moins une valeur non-NaN
     addplots = []
-    if st_bull.notna().any():
+    if st_bull.notna().sum() > 1:
         addplots.append(mpf.make_addplot(st_bull, color="#00bcd4", width=1.8))
-    if st_bear.notna().any():
+    if st_bear.notna().sum() > 1:
         addplots.append(mpf.make_addplot(st_bear, color="#ff5252", width=1.8))
 
-    # Trace le graphique
     if addplots:
         fig, axes = mpf.plot(
             df, type="candle", style=style,
@@ -146,7 +145,6 @@ def make_chart(df, nom, tf):
 
     ax = axes[0]
 
-    # Fleches blanches
     for sig in sigs:
         if sig["date"] not in df.index:
             continue
@@ -162,7 +160,6 @@ def make_chart(df, nom, tf):
             ax.text(idx, prix*1.0042, f"{prix:.3f}", color="white", fontsize=7.5,
                 ha="center", va="bottom", fontweight="bold")
 
-    # Prix actuel
     lp = df["Close"].iloc[-1]
     ax.axhline(lp, color="#ff4081", lw=0.9, linestyle="--", alpha=0.85)
     ax.text(len(df)-0.5, lp, f"  {lp:.3f}", color="white", fontsize=9.5,
@@ -183,7 +180,7 @@ async def scan(app):
     for key, info in ACTIFS.items():
         if key == "xauusd":
             continue
-        for tf, cfg in [("5m", TIMEFRAMES["5m"]), ("1h", TIMEFRAMES["1h"])]:
+        for tf, cfg in [("1m", TIMEFRAMES["1m"]), ("1h", TIMEFRAMES["1h"])]:
             try:
                 df = get_data(info["symbol"], cfg["period"], cfg["interval"])
                 if df.empty or len(df) < 20:
@@ -228,9 +225,10 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Je t envoie automatiquement une alerte + graphique\n"
                 f"des qu une fleche apparait sur le marche !\n\n"
                 f"Commandes :\n"
+                f"fc gold 1m\n"
                 f"fc gold 5m\n"
                 f"fc gold 1h\n"
-                f"fc btc 1h\n"
+                f"fc btc 1m\n"
                 f"fc silver 1d"
             )
             return
@@ -238,7 +236,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if texte.startswith("fc "):
             parts = texte.split()
             actif = parts[1] if len(parts) > 1 else "gold"
-            tf    = parts[2] if len(parts) > 2 else "5m"
+            tf    = parts[2] if len(parts) > 2 else "1m"
 
             if actif not in ACTIFS:
                 await update.message.reply_text(f"Actif inconnu. Disponibles : {', '.join(ACTIFS.keys())}")
