@@ -107,17 +107,6 @@ def make_chart(df, nom, tf):
     df   = calc_supertrend(df).tail(80).copy()
     sigs = get_signaux(df)
 
-    # Correction : remplace NaN par 0 pour eviter l'erreur zero-size
-    st_bull = df["st"].where(df["dir"] == 1, other=np.nan).fillna(0)
-    st_bear = df["st"].where(df["dir"] == -1, other=np.nan).fillna(0)
-
-    # Ne trace le supertrend que s'il y a des valeurs non nulles
-    addplots = []
-    if st_bull.max() > 0:
-        addplots.append(mpf.make_addplot(st_bull.replace(0, np.nan), color="#00bcd4", width=1.8))
-    if st_bear.max() > 0:
-        addplots.append(mpf.make_addplot(st_bear.replace(0, np.nan), color="#ff5252", width=1.8))
-
     mc = mpf.make_marketcolors(
         up="#26a69a", down="#ef5350",
         edge="inherit", wick="inherit",
@@ -130,16 +119,34 @@ def make_chart(df, nom, tf):
         rc={"axes.labelcolor":"#999","xtick.color":"#888","ytick.color":"#888","font.size":9},
     )
 
-    plot_kwargs = dict(
-        df=df, type="candle", style=style,
-        volume=True, returnfig=True, figsize=(13, 7), tight_layout=True,
-    )
-    if addplots:
-        plot_kwargs["addplot"] = addplots
+    # Supertrend — on remplace NaN par valeur neutre pour eviter zero-size
+    st_val = df["st"].fillna(method="ffill").fillna(df["Close"])
+    st_bull = st_val.where(df["dir"] == 1,  other=np.nan)
+    st_bear = st_val.where(df["dir"] == -1, other=np.nan)
 
-    fig, axes = mpf.plot(**plot_kwargs)
+    # S'assure qu'il y a au moins une valeur non-NaN
+    addplots = []
+    if st_bull.notna().any():
+        addplots.append(mpf.make_addplot(st_bull, color="#00bcd4", width=1.8))
+    if st_bear.notna().any():
+        addplots.append(mpf.make_addplot(st_bear, color="#ff5252", width=1.8))
+
+    # Trace le graphique
+    if addplots:
+        fig, axes = mpf.plot(
+            df, type="candle", style=style,
+            addplot=addplots,
+            volume=True, returnfig=True, figsize=(13, 7), tight_layout=True,
+        )
+    else:
+        fig, axes = mpf.plot(
+            df, type="candle", style=style,
+            volume=True, returnfig=True, figsize=(13, 7), tight_layout=True,
+        )
+
     ax = axes[0]
 
+    # Fleches blanches
     for sig in sigs:
         if sig["date"] not in df.index:
             continue
@@ -155,6 +162,7 @@ def make_chart(df, nom, tf):
             ax.text(idx, prix*1.0042, f"{prix:.3f}", color="white", fontsize=7.5,
                 ha="center", va="bottom", fontweight="bold")
 
+    # Prix actuel
     lp = df["Close"].iloc[-1]
     ax.axhline(lp, color="#ff4081", lw=0.9, linestyle="--", alpha=0.85)
     ax.text(len(df)-0.5, lp, f"  {lp:.3f}", color="white", fontsize=9.5,
@@ -199,11 +207,7 @@ async def scan(app):
                     f"Heure : {last['date'].strftime('%d/%m %H:%M')}\n\n"
                     f"Fais ta propre analyse avant de trader."
                 )
-                await app.bot.send_photo(
-                    chat_id=VOTRE_CHAT_ID,
-                    photo=buf,
-                    caption=caption,
-                )
+                await app.bot.send_photo(chat_id=VOTRE_CHAT_ID, photo=buf, caption=caption)
                 print(f"Signal envoye : {info['nom']} {tf} {last['type']}")
             except Exception as e:
                 print(f"Erreur scan {key} {tf}: {e}")
@@ -237,24 +241,19 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             tf    = parts[2] if len(parts) > 2 else "5m"
 
             if actif not in ACTIFS:
-                await update.message.reply_text(
-                    f"Actif inconnu. Disponibles : {', '.join(ACTIFS.keys())}"
-                )
+                await update.message.reply_text(f"Actif inconnu. Disponibles : {', '.join(ACTIFS.keys())}")
                 return
             if tf not in TIMEFRAMES:
-                await update.message.reply_text(
-                    f"Timeframe inconnu. Disponibles : {', '.join(TIMEFRAMES.keys())}"
-                )
+                await update.message.reply_text(f"Timeframe inconnu. Disponibles : {', '.join(TIMEFRAMES.keys())}")
                 return
 
             info = ACTIFS[actif]
             cfg  = TIMEFRAMES[tf]
-            msg  = await update.message.reply_text(
-                f"Generation du graphique {info['nom']} {tf.upper()}..."
-            )
+            msg  = await update.message.reply_text(f"Generation du graphique {info['nom']} {tf.upper()}...")
+
             df = get_data(info["symbol"], cfg["period"], cfg["interval"])
             if df.empty:
-                await msg.edit_text("Donnees indisponibles. Reessaie dans quelques secondes.")
+                await msg.edit_text("Donnees indisponibles. Reessaie.")
                 return
 
             df_st = calc_supertrend(df)
