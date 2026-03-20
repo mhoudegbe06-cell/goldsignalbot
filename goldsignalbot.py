@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import yfinance as yf
+import requests
 from io import BytesIO
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -21,39 +21,43 @@ VOTRE_CHAT_ID  = int(os.environ.get("VOTRE_CHAT_ID", "0"))
 SCAN_MINUTES   = 1
 
 TIMEFRAMES = {
-    "1m": {"period": "1d",  "interval": "1m"},
-    "5m": {"period": "1d",  "interval": "5m"},
-    "1h": {"period": "5d",  "interval": "1h"},
-    "1d": {"period": "60d", "interval": "1d"},
+    "1m": {"range": "1d",  "interval": "1m"},
+    "5m": {"range": "5d",  "interval": "5m"},
+    "1h": {"range": "1mo", "interval": "1h"},
+    "1d": {"range": "1y",  "interval": "1d"},
 }
 
 derniers_signaux = {}
 
 
-# ════════════════════════════════════════════
-#  DONNÉES
-# ════════════════════════════════════════════
-
-def get_data(interval, period):
+def get_data(interval, range_):
+    url     = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    params = {"range": range_, "interval": interval, "includePrePost": "false"}
     try:
-        df = yf.download("GC=F", period=period, interval=interval,
-                         progress=False, auto_adjust=True)
-        if df.empty or len(df) < 15:
-            return pd.DataFrame()
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-        df.columns = ["Open", "High", "Low", "Close", "Volume"]
+        r   = requests.get(url, headers=headers, params=params, timeout=15)
+        d   = r.json()
+        res = d["chart"]["result"][0]
+        q   = res["indicators"]["quote"][0]
+        ts  = res["timestamp"]
+        df  = pd.DataFrame({
+            "Open":   q["open"],
+            "High":   q["high"],
+            "Low":    q["low"],
+            "Close":  q["close"],
+            "Volume": q.get("volume", [0]*len(ts)),
+        }, index=pd.to_datetime(ts, unit="s"))
         df.dropna(inplace=True)
-        if hasattr(df.index, "tz") and df.index.tz is not None:
-            df.index = df.index.tz_convert(None)
+        if len(df) < 10:
+            return pd.DataFrame()
         return df
     except Exception as e:
         print(f"Erreur get_data {interval}: {e}")
         return pd.DataFrame()
 
-
-# ════════════════════════════════════════════
-#  SUPERTREND + ATR
-# ════════════════════════════════════════════
 
 def calc_atr(df, period=14):
     pc = df["Close"].shift(1)
@@ -96,10 +100,10 @@ def get_signaux(df):
         pd_, cd = df["dir"].iloc[i-1], df["dir"].iloc[i]
         if pd_ == -1 and cd == 1:
             sigs.append({"date": df.index[i], "type": "BUY",
-                         "prix": float(df["Close"].iloc[i]), "atr": float(df["atr"].iloc[i])})
+                "prix": float(df["Close"].iloc[i]), "atr": float(df["atr"].iloc[i])})
         elif pd_ == 1 and cd == -1:
             sigs.append({"date": df.index[i], "type": "SELL",
-                         "prix": float(df["Close"].iloc[i]), "atr": float(df["atr"].iloc[i])})
+                "prix": float(df["Close"].iloc[i]), "atr": float(df["atr"].iloc[i])})
     return sigs
 
 
@@ -111,10 +115,6 @@ def calc_sl_tp(sig):
     else:
         return round(prix + atr * 1.5, 3), round(prix - atr * 3.0, 3)
 
-
-# ════════════════════════════════════════════
-#  GRAPHIQUE
-# ════════════════════════════════════════════
 
 def make_chart(df, tf, sl=None, tp=None):
     df   = calc_supertrend(df).tail(80).copy()
@@ -145,7 +145,7 @@ def make_chart(df, tf, sl=None, tp=None):
             ax1.plot([i-1, i], [float(sp), float(sv)], color=col, linewidth=1.8, zorder=3)
 
     rng = float(df["High"].max() - df["Low"].min())
-    off = rng * 0.012
+    off = max(rng * 0.012, 0.1)
     for sig in sigs:
         if sig["date"] not in df.index:
             continue
@@ -175,9 +175,9 @@ def make_chart(df, tf, sl=None, tp=None):
         bbox=dict(boxstyle="round,pad=0.3", facecolor="#ef5350", edgecolor="none"), zorder=5)
 
     for i in range(n):
-        o = float(df["Open"].iloc[i])
-        c = float(df["Close"].iloc[i])
         v = float(df["Volume"].iloc[i]) if df["Volume"].iloc[i] else 0
+        c = float(df["Close"].iloc[i])
+        o = float(df["Open"].iloc[i])
         ax2.bar(i, v, color="#26a69a55" if c >= o else "#ef535055", width=0.7)
 
     step  = max(1, n // 8)
@@ -207,12 +207,8 @@ def make_chart(df, tf, sl=None, tp=None):
     return buf
 
 
-# ════════════════════════════════════════════
-#  CLAVIER BOUTONS
-# ════════════════════════════════════════════
-
-def menu_principal():
-    keyboard = [
+def menu():
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🥇 Gold 1m", callback_data="chart_1m"),
             InlineKeyboardButton("🥇 Gold 5m", callback_data="chart_5m"),
@@ -222,22 +218,43 @@ def menu_principal():
             InlineKeyboardButton("🥇 Gold 1j", callback_data="chart_1d"),
         ],
         [
-            InlineKeyboardButton("📊 Signal actuel", callback_data="signal_now"),
+            InlineKeyboardButton("📊 Signal actuel", callback_data="chart_5m"),
         ],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    ])
 
 
-# ════════════════════════════════════════════
-#  SCAN AUTOMATIQUE
-# ════════════════════════════════════════════
+async def generer_et_envoyer(message, tf):
+    cfg = TIMEFRAMES[tf]
+    df  = get_data(cfg["interval"], cfg["range"])
+    if df.empty:
+        await message.reply_text(
+            "Marche ferme ou donnees indisponibles.\n"
+            "Gold trade du lundi au vendredi.\n"
+            "Reessaie pendant les heures de marche.",
+            reply_markup=menu()
+        )
+        return
+    df_st    = calc_supertrend(df)
+    sigs     = get_signaux(df_st)
+    last     = sigs[-1] if sigs else None
+    sl, tp   = calc_sl_tp(last) if last else (None, None)
+    buf      = make_chart(df, tf, sl=sl, tp=tp)
+    lp       = float(df_st["Close"].iloc[-1])
+    tendance = "Haussier" if df_st["dir"].iloc[-1] == 1 else "Baissier"
+    sig_txt  = ""
+    if last:
+        e = "ACHAT" if last["type"] == "BUY" else "VENTE"
+        sig_txt = f"\nSignal : {e} @ {last['prix']:.3f}\nSL : {sl:.3f}  |  TP : {tp:.3f}"
+    caption = f"Gold - {tf.upper()}\nPrix : {lp:.3f}\nTendance : {tendance}{sig_txt}"
+    await message.reply_photo(photo=buf, caption=caption, reply_markup=menu())
+
 
 async def scan(app):
     print(f"Scan {datetime.now().strftime('%H:%M:%S')}")
     for tf in ["1m", "5m"]:
         try:
             cfg = TIMEFRAMES[tf]
-            df  = get_data(cfg["interval"], cfg["period"])
+            df  = get_data(cfg["interval"], cfg["range"])
             if df.empty or len(df) < 20:
                 continue
             df_st = calc_supertrend(df)
@@ -265,11 +282,9 @@ async def scan(app):
                 f"_Fais ta propre analyse avant de trader._"
             )
             await app.bot.send_photo(
-                chat_id=VOTRE_CHAT_ID,
-                photo=buf,
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=menu_principal()
+                chat_id=VOTRE_CHAT_ID, photo=buf,
+                caption=caption, parse_mode="Markdown",
+                reply_markup=menu()
             )
             print(f"Signal Gold {tf} {last['type']} SL:{sl} TP:{tp}")
         except Exception as e:
@@ -277,76 +292,24 @@ async def scan(app):
         await asyncio.sleep(1)
 
 
-# ════════════════════════════════════════════
-#  HANDLERS
-# ════════════════════════════════════════════
-
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"Bonjour ! Je suis GoldSignalBot.\n\n"
-        f"Je surveille Gold en 1m et 5m.\n"
-        f"Des qu une fleche apparait tu recois :\n"
-        f"graphique + Entree + SL + TP\n\n"
-        f"Appuie sur un bouton pour voir un graphique :",
-        reply_markup=menu_principal()
+        "Bonjour ! Je suis GoldSignalBot.\n\n"
+        "Je surveille Gold en 1m et 5m.\n"
+        "Des qu une fleche apparait tu recois :\n"
+        "graphique + Entree + SL + TP\n\n"
+        "Appuie sur un bouton :",
+        reply_markup=menu()
     )
 
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    data = query.data
-
-    if data == "signal_now":
-        # Montre le signal le plus recent sur 5m
-        tf  = "5m"
-        cfg = TIMEFRAMES[tf]
-        msg = await query.message.reply_text("Analyse en cours...")
-        df  = get_data(cfg["interval"], cfg["period"])
-        if df.empty:
-            await msg.edit_text("Donnees indisponibles. Reessaie.")
-            return
-        df_st    = calc_supertrend(df)
-        sigs     = get_signaux(df_st)
-        last     = sigs[-1] if sigs else None
-        sl, tp   = calc_sl_tp(last) if last else (None, None)
-        buf      = make_chart(df, tf, sl=sl, tp=tp)
-        lp       = float(df_st["Close"].iloc[-1])
-        tendance = "Haussier" if df_st["dir"].iloc[-1] == 1 else "Baissier"
-        sig_txt  = ""
-        if last:
-            e = "ACHAT" if last["type"] == "BUY" else "VENTE"
-            sig_txt = f"\nSignal : {e} @ {last['prix']:.3f}\nSL : {sl:.3f}  |  TP : {tp:.3f}"
-        caption = f"Gold - {tf.upper()}\nPrix : {lp:.3f}\nTendance : {tendance}{sig_txt}"
-        await msg.delete()
-        await query.message.reply_photo(photo=buf, caption=caption, reply_markup=menu_principal())
-        return
-
-    if data.startswith("chart_"):
-        tf  = data.replace("chart_", "")
-        cfg = TIMEFRAMES.get(tf)
-        if not cfg:
-            return
-        msg = await query.message.reply_text(f"Generation graphique Gold {tf.upper()}...")
-        df  = get_data(cfg["interval"], cfg["period"])
-        if df.empty:
-            await msg.edit_text("Donnees indisponibles. Reessaie.")
-            return
-        df_st    = calc_supertrend(df)
-        sigs     = get_signaux(df_st)
-        last     = sigs[-1] if sigs else None
-        sl, tp   = calc_sl_tp(last) if last else (None, None)
-        buf      = make_chart(df, tf, sl=sl, tp=tp)
-        lp       = float(df_st["Close"].iloc[-1])
-        tendance = "Haussier" if df_st["dir"].iloc[-1] == 1 else "Baissier"
-        sig_txt  = ""
-        if last:
-            e = "ACHAT" if last["type"] == "BUY" else "VENTE"
-            sig_txt = f"\nSignal : {e} @ {last['prix']:.3f}\nSL : {sl:.3f}  |  TP : {tp:.3f}"
-        caption = f"Gold - {tf.upper()}\nPrix : {lp:.3f}\nTendance : {tendance}{sig_txt}"
-        await msg.delete()
-        await query.message.reply_photo(photo=buf, caption=caption, reply_markup=menu_principal())
+    tf = query.data.replace("chart_", "")
+    msg = await query.message.reply_text(f"Generation graphique Gold {tf.upper()}...")
+    await generer_et_envoyer(query.message, tf)
+    await msg.delete()
 
 
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -354,13 +317,9 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "Appuie sur un bouton pour voir un graphique :",
-        reply_markup=menu_principal()
+        reply_markup=menu()
     )
 
-
-# ════════════════════════════════════════════
-#  LANCEMENT
-# ════════════════════════════════════════════
 
 def main():
     print("GoldSignalBot demarre...")
@@ -374,7 +333,7 @@ def main():
 
     async def post_init(application):
         scheduler.start()
-        print("Pret ! Surveillance Gold 1m et 5m active.")
+        print("Pret ! Surveillance Gold 1m et 5m.")
 
     app.post_init = post_init
     app.run_polling()
