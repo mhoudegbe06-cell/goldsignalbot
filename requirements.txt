@@ -1,0 +1,8 @@
+python-telegram-bot==20.7
+mplfinance==0.12.10b0
+pandas==2.1.4
+numpy==1.26.2
+requests==2.31.0
+apscheduler==3.10.4
+matplotlib==3.8.2
+Pillow==10.1.0
